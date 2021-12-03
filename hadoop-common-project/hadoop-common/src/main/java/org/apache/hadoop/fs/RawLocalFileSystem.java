@@ -312,6 +312,9 @@ public class RawLocalFileSystem extends FileSystem {
     if (exists(f) && !overwrite) {
       throw new FileAlreadyExistsException("File already exists: " + f);
     }
+    if (!exists(f)) {
+      Files.createFile(pathToFile(f).toPath());
+    }
     Path parent = f.getParent();
     if (parent != null && !mkdirs(parent)) {
       throw new IOException("Mkdirs failed to create " + parent.toString());
