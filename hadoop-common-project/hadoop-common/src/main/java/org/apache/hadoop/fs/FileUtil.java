@@ -36,8 +36,10 @@ import java.nio.charset.Charset;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -67,7 +69,7 @@ import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.commons.io.FileUtils;
 /**
  * A collection of file-processing util methods
  */
@@ -856,15 +858,20 @@ public class FileUtil {
     }
 
     boolean gzipped = inFile.toString().endsWith("gz");
-    if(Shell.WINDOWS) {
+    if (Shell.WINDOWS) {
       // Tar is not native to Windows. Use simple Java based implementation for
       // tests and simple tar archives
       unTarUsingJava(inFile, untarDir, gzipped);
-    }
-    else {
+    } else {
       // spawn tar utility to untar archive for full fledged unix behavior such
       // as resolving symlinks in tar archives
-      unTarUsingTar(inFile, untarDir, gzipped);
+      // unTarUsingTar(inFile, untarDir, gzipped);
+
+      // symlink syscall is not implemented in LibOs
+      // to bypss this defect, use simple java based implementation to copy the symlink/hardlink
+      // source file to the destination path
+      // not support symbolic link to a symbolic link file
+      unTarUsingJava(inFile, untarDir, gzipped);
     }
   }
 
@@ -928,10 +935,12 @@ public class FileUtil {
 
       tis = new TarArchiveInputStream(inputStream);
 
+      Map<TarArchiveEntry, File> entryMap = new HashMap<>();
       for (TarArchiveEntry entry = tis.getNextTarEntry(); entry != null;) {
-        unpackEntries(tis, entry, untarDir);
+        unpackEntries(tis, entry, untarDir, entryMap);
         entry = tis.getNextTarEntry();
       }
+      copyLinkEntries(entryMap);
     } finally {
       IOUtils.cleanupWithLogger(LOG, tis, inputStream);
     }
@@ -951,6 +960,7 @@ public class FileUtil {
 
       tis = new TarArchiveInputStream(inputStream);
 
+
       for (TarArchiveEntry entry = tis.getNextTarEntry(); entry != null;) {
         unpackEntries(tis, entry, untarDir);
         entry = tis.getNextTarEntry();
@@ -960,6 +970,126 @@ public class FileUtil {
     }
   }
 
+  /**
+   * Gets the canonical path for the link file
+   *
+   * @param entry      The entry which records the tar entry's link source file,
+   *                   and target destination file.
+   * @param outputFile The target output file, used for computing the absolute
+   *                   path.
+   *                   This information is needed because the entry's link name is
+   *                   a relative path that is relative to the outputFile's path.
+   * @param outputDir  The relative path given by hardlink entry is relative to
+   *                   the output directory.
+   * @return The canonical path of the given link source file.
+   */
+  private static String getCanonicalLinkPath(TarArchiveEntry entry, File outputFile, File outputDir)
+      throws IOException {
+    String sourcePath;
+    if (entry.isSymbolicLink()) {
+      sourcePath = getCanonicalPath(entry.getLinkName(), outputFile.getParentFile());
+    } else if (entry.isLink()) {
+      sourcePath = getCanonicalPath(entry.getLinkName(), outputDir);
+    } else {
+      throw new IOException("Unexpected link entry flag, not a symbolic/hard link");
+    }
+    return sourcePath;
+  }
+
+  private static void unpackEntries(TarArchiveInputStream tis,
+      TarArchiveEntry entry, File outputDir, Map<TarArchiveEntry, File> entryMap) throws IOException {
+    String targetDirPath = outputDir.getCanonicalPath() + File.separator;
+    File outputFile = new File(outputDir, entry.getName());
+    if (!outputFile.getCanonicalPath().startsWith(targetDirPath)) {
+      throw new IOException("expanding " + entry.getName()
+          + " would create entry outside of " + outputDir);
+    }
+
+    if (entry.isSymbolicLink() || entry.isLink()) {
+      String canonicalTargetPath = getCanonicalLinkPath(entry, outputFile, outputDir);
+      if (!canonicalTargetPath.startsWith(targetDirPath)) {
+        throw new IOException(
+            "expanding " + entry.getName() + " would create entry outside of " + outputDir);
+      }
+      entryMap.put(entry, outputDir);
+      return;
+    }
+
+    if (entry.isDirectory()) {
+      File subDir = new File(outputDir, entry.getName());
+      if (!subDir.mkdirs() && !subDir.isDirectory()) {
+        throw new IOException("Mkdirs failed to create tar internal dir "
+            + outputDir);
+      }
+
+      for (TarArchiveEntry e : entry.getDirectoryEntries()) {
+        unpackEntries(tis, e, subDir, entryMap);
+      }
+
+      return;
+    }
+
+    if (!outputFile.getParentFile().exists()) {
+      if (!outputFile.getParentFile().mkdirs()) {
+        throw new IOException("Mkdirs failed to create tar internal dir "
+            + outputDir);
+      }
+    }
+
+
+    int count;
+    byte data[] = new byte[2048];
+    try (BufferedOutputStream outputStream = new BufferedOutputStream(
+        new FileOutputStream(outputFile));) {
+
+      while ((count = tis.read(data)) != -1) {
+        outputStream.write(data, 0, count);
+      }
+
+      outputStream.flush();
+    }
+  }
+
+
+  static void copyLinkEntries(Map<TarArchiveEntry, File> entryMap) throws IOException{
+    Map<TarArchiveEntry, File> dirEntries = new HashMap<>();
+    for (Map.Entry<TarArchiveEntry, File> mapEntry : entryMap.entrySet()) {
+      TarArchiveEntry entry = mapEntry.getKey();
+      File outputDir = mapEntry.getValue();
+      File outputFile = new File(outputDir, entry.getName());
+      String sourcePath = getCanonicalLinkPath(entry, outputFile, outputDir);
+      File src = new File(sourcePath);
+      if (src.isDirectory()) {
+        dirEntries.put(entry, outputDir);
+      } else {
+        FileUtils.copyFile(src, outputFile);
+      }
+    }
+    for (Map.Entry<TarArchiveEntry, File> mapEntry: dirEntries.entrySet()) {
+      TarArchiveEntry entry = mapEntry.getKey();
+      File outputDir = mapEntry.getValue();
+      File outputFile = new File(outputDir, entry.getName());
+      String sourcePath = getCanonicalLinkPath(entry, outputFile, outputDir);
+      File src = new File(sourcePath);
+      if (src.isDirectory()) {
+        FileUtils.copyDirectory(src, outputFile);
+      } else {
+        throw new IOException("copyLinkEntries: Unexpected file type");
+      }
+    }
+  }
+
+  /**
+   * Gets the canonical path for the given path.
+   *
+   * @param path      The path for which the canonical path needs to be computed.
+   * @param parentDir The parent directory to use if the path is a relative path.
+   * @return The canonical path of the given path.
+   */
+  private static String getCanonicalPath(String path, File parentDir) throws IOException {
+    java.nio.file.Path targetPath = Paths.get(path);
+    return (targetPath.isAbsolute() ? new File(path) : new File(parentDir, path)).getCanonicalPath();
+  }
   private static void unpackEntries(TarArchiveInputStream tis,
       TarArchiveEntry entry, File outputDir) throws IOException {
     String targetDirPath = outputDir.getCanonicalPath() + File.separator;
@@ -983,6 +1113,13 @@ public class FileUtil {
       return;
     }
 
+    if (!outputFile.getParentFile().exists()) {
+      if (!outputFile.getParentFile().mkdirs()) {
+        throw new IOException("Mkdirs failed to create tar internal dir "
+            + outputDir);
+      }
+    }
+
     if (entry.isSymbolicLink()) {
       // Create symbolic link relative to tar parent dir
       Files.createSymbolicLink(FileSystems.getDefault()
@@ -991,12 +1128,6 @@ public class FileUtil {
       return;
     }
 
-    if (!outputFile.getParentFile().exists()) {
-      if (!outputFile.getParentFile().mkdirs()) {
-        throw new IOException("Mkdirs failed to create tar internal dir "
-            + outputDir);
-      }
-    }
 
     if (entry.isLink()) {
       File src = new File(outputDir, entry.getLinkName());
