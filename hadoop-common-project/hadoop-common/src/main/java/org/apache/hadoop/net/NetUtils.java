@@ -540,14 +540,14 @@ public class NetUtils {
     // we will actually end up getting connected to ourself (ie any data we
     // send just comes right back). This is only possible if the target
     // daemon is down, so we'll treat it like connection refused.
-    if (socket.getLocalPort() == socket.getPort() &&
-        socket.getLocalAddress().equals(socket.getInetAddress())) {
-      LOG.info("Detected a loopback TCP socket, disconnecting it");
-      socket.close();
-      throw new ConnectException(
-        "Localhost targeted connection resulted in a loopback. " +
-        "No daemon is listening on the target port.");
-    }
+    // if (socket.getLocalPort() == socket.getPort() &&
+    //    socket.getLocalAddress().equals(socket.getInetAddress())) {
+    //  LOG.info("Detected a loopback TCP socket, disconnecting it");
+    //  socket.close();
+    //  throw new ConnectException(
+    //    "Localhost targeted connection resulted in a loopback. " +
+    //    "No daemon is listening on the target port.");
+    //}
   }
   
   /** 
