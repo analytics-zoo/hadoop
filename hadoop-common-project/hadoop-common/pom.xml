@@ -331,6 +331,13 @@
     </dependency>
   </dependencies>
 
+  <repositories>
+    <repository>
+      <id>spring</id>
+      <url>https://maven.aliyun.com/repository/spring</url>
+    </repository>
+  </repositories>
+
   <build>
     <!--
     Include all files in src/main/resources.  By default, do not apply property
