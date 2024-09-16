@@ -312,6 +312,9 @@ public class RawLocalFileSystem extends FileSystem {
     if (exists(f) && !overwrite) {
       throw new FileAlreadyExistsException("File already exists: " + f);
     }
+    if (!exists(f)) {
+      Files.createFile(pathToFile(f).toPath());
+    }
     Path parent = f.getParent();
     if (parent != null && !mkdirs(parent)) {
       throw new IOException("Mkdirs failed to create " + parent.toString());
@@ -528,10 +531,10 @@ public class RawLocalFileSystem extends FileSystem {
     if (permission == null) {
       permission = FsPermission.getDirDefault();
     }
-    // permission = permission.applyUMask(FsPermission.getUMask(getConf()));
-    System.out.println("WARN disable permission umask not to " +
-            permission.applyUMask(FsPermission.getUMask(getConf())));
-    System.out.println("WARN permission is still:" + permission);
+    permission = permission.applyUMask(FsPermission.getUMask(getConf()));
+    // System.out.println("WARN disable permission umask not to " +
+    //        permission.applyUMask(FsPermission.getUMask(getConf())));
+    // System.out.println("WARN permission is still:" + permission);
     if (Shell.WINDOWS && NativeIO.isAvailable()) {
       try {
         NativeIO.Windows.createDirectoryWithMode(p2f, permission.toShort());
@@ -734,9 +737,9 @@ public class RawLocalFileSystem extends FileSystem {
      */
     private synchronized void loadPermissionInfo() {
       // disable NativeIO to avoid graphene issue
-      System.out.println("WARN RawLocalFileSystem.loadPermissionInfo disabled loadPermissionInfoByNativeIO and " +
-              "loadPermissionInfoByNonNativeIO!!!");
-      /*
+      // System.out.println("WARN RawLocalFileSystem.loadPermissionInfo disabled loadPermissionInfoByNativeIO and " +
+      //         "loadPermissionInfoByNonNativeIO!!!");
+      System.out.println("INFO RawLocalFileSystem.loadPermissionInfo");
       if (!isPermissionLoaded() && NativeIO.isAvailable()) {
         try {
           loadPermissionInfoByNativeIO();
@@ -749,7 +752,6 @@ public class RawLocalFileSystem extends FileSystem {
       if (!isPermissionLoaded()) {
         loadPermissionInfoByNonNativeIO();
       }
-      */
     }
 
     /// loads permissions, owner, and group from `ls -ld`
@@ -866,18 +868,23 @@ public class RawLocalFileSystem extends FileSystem {
   @Override
   public void setPermission(Path p, FsPermission permission)
     throws IOException {
-    System.out.println("WARN: HADOOP.RawLocalFileSystem disabled NativeIO and " +
-            "ProcessBuilder chmod to avoid issues in Graphene");
-    /* disable NativeIO and ProcessBuilder chmod to avoid issues in Graphene
+    // System.out.println("WARN: HADOOP.RawLocalFileSystem disabled NativeIO and " +
+    //         "ProcessBuilder chmod to avoid issues in Graphene");
+    System.out.println("INFO: HADOOP.RawLocalFileSystem setPermission " + p +
+            "to " + permission);
+    // disable NativeIO and ProcessBuilder chmod to avoid issues in Graphene
     if (NativeIO.isAvailable()) {
-      NativeIO.POSIX.chmod(pathToFile(p).getCanonicalPath(),
-                     permission.toShort());
+      File f = pathToFile(p);
+      f.setReadable(true, false);
+      f.setWritable(true, false);
+      f.setExecutable(true, false);
+//      NativeIO.POSIX.chmod(pathToFile(p).getCanonicalPath(),
+//                     permission.toShort());
     } else {
       String perm = String.format("%04o", permission.toShort());
       Shell.execCommand(Shell.getSetPermissionCommand(perm, false,
         FileUtil.makeShellPath(pathToFile(p), true)));
     }
-     */
   }
  
   /**
